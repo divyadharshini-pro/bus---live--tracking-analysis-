@@ -8,9 +8,9 @@ BUNCHING_KM = 0.50
 STALE_SECONDS = 20
 
 BUSES = {
-    "BUS-01": {"lat": 11.0168, "lng": 76.9558, "speed": 0.0, "updated": None, "accuracy": None},
-    "BUS-02": {"lat": 11.0200, "lng": 76.9620, "speed": 0.0, "updated": None, "accuracy": None},
-    "BUS-03": {"lat": 11.0250, "lng": 76.9700, "speed": 0.0, "updated": None, "accuracy": None},
+    "BUS-01": {"number": "TN 38 AB 1234", "lat": 11.0168, "lng": 76.9558, "speed": 0.0, "updated": None, "accuracy": None},
+    "BUS-02": {"number": "TN 38 CD 5678", "lat": 11.0200, "lng": 76.9620, "speed": 0.0, "updated": None, "accuracy": None},
+    "BUS-03": {"number": "TN 38 EF 9012", "lat": 11.0250, "lng": 76.9700, "speed": 0.0, "updated": None, "accuracy": None},
 }
 
 def distance_km(lat1, lon1, lat2, lon2):
@@ -49,9 +49,13 @@ header p{margin:6px 0 0;font-size:13px}
 .badge{padding:5px 9px;border-radius:20px;font-size:12px;background:#e8f7ed;color:#19733b}
 .warning{background:#fff2d5;color:#8a5b00}
 .info{font-size:13px;margin-top:7px;color:#596579}
-select,button{width:100%;padding:11px;border-radius:9px}
-select{border:1px solid #ccd4df;margin:7px 0 10px}
-button{border:0;background:#173b7a;color:white;font-weight:bold}
+select,button,input{width:100%;padding:11px;border-radius:9px}
+select,input{border:1px solid #ccd4df;margin:7px 0 10px}
+button{border:0;background:#173b7a;color:white;font-weight:bold;cursor:pointer}
+.search-row{display:grid;grid-template-columns:1fr 110px;gap:8px}
+.search-result{padding:10px;background:#f4f7fb;border-radius:10px;margin-top:4px}
+.search-result strong{color:#173b7a}
+@media(max-width:500px){.search-row{grid-template-columns:1fr}}
 .stop{background:#9b2c2c;margin-top:8px}
 .status-live{color:#19733b;font-weight:bold}
 .status-demo{color:#8a5b00;font-weight:bold}
@@ -73,6 +77,15 @@ button{border:0;background:#173b7a;color:white;font-weight:bold}
 
 <div>
 <div class="card">
+<h3>🔎 Where is my Bus?</h3>
+<div class="search-row">
+<input id="busSearch" type="text" placeholder="Enter bus number e.g. TN 38 AB 1234">
+<button onclick="searchBus()">Track Bus</button>
+</div>
+<div id="searchResult" class="search-result info">Enter a registered bus number to find its live location.</div>
+</div>
+
+<div class="card" style="margin-top:15px">
 <h3>🚍 Passenger View</h3>
 <div id="busCards">Loading buses...</div>
 </div>
@@ -185,7 +198,8 @@ async function updateBuses() {
             html += `
             <div class="bus-card">
                 <div class="bus-head">
-                    <div class="bus-name">🚌 ${id}</div>
+                    <div class="bus-name">🚌 ${bus.number || id}</div>
+                    <div class="info" style="margin-top:2px">${id}</div>
                     <div class="badge ${bunching ? "warning" : ""}">${status}</div>
                 </div>
                 <div class="info">🚀 Speed: <b>${Number(bus.speed).toFixed(1)} km/h</b></div>
@@ -208,6 +222,63 @@ async function updateBuses() {
             "<div class='info'>Unable to load bus data.</div>";
     }
 }
+
+function normalizeBusNumber(value) {
+    return value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+async function searchBus() {
+    const input = document.getElementById("busSearch").value.trim();
+    const result = document.getElementById("searchResult");
+
+    if (!input) {
+        result.innerHTML = "⚠️ Please enter a bus number.";
+        return;
+    }
+
+    try {
+        const response = await fetch("/api/buses");
+        const buses = await response.json();
+        const wanted = normalizeBusNumber(input);
+        let foundId = null;
+
+        for (const id of Object.keys(buses)) {
+            const busNumber = normalizeBusNumber(buses[id].number || id);
+            if (busNumber === wanted || normalizeBusNumber(id) === wanted) {
+                foundId = id;
+                break;
+            }
+        }
+
+        if (!foundId) {
+            result.innerHTML = "❌ Bus not found. Try one of the registered bus numbers shown below.";
+            return;
+        }
+
+        const bus = buses[foundId];
+        const isFresh = bus.updated !== null && (Date.now() / 1000 - bus.updated) <= 20;
+        const status = !isFresh ? "📍 Demo / Waiting" : (bus.speed < 2 ? "🟡 Stopped" : "🟢 Moving");
+
+        map.setView([bus.lat, bus.lng], 16);
+        if (markers[foundId]) {
+            markers[foundId].openTooltip();
+        }
+
+        result.innerHTML = `
+            <strong>🚌 ${bus.number || foundId}</strong><br>
+            📍 Location: ${bus.lat.toFixed(5)}, ${bus.lng.toFixed(5)}<br>
+            🚀 Speed: ${Number(bus.speed).toFixed(1)} km/h<br>
+            ${status}<br>
+            ${isFresh ? "📡 Live GPS updated recently" : "📍 Starting/demo position"}
+        `;
+    } catch (error) {
+        result.innerHTML = "Unable to search bus right now.";
+    }
+}
+
+document.getElementById("busSearch").addEventListener("keydown", event => {
+    if (event.key === "Enter") searchBus();
+});
 
 let watchId = null;
 

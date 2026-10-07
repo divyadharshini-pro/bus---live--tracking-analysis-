@@ -10,6 +10,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "smartbus-demo-secret-change-this")
 DB_PATH = os.environ.get("BUS_DB_PATH", "smartbus.db")
 
+# Render/production-safe SQLite connection settings
+SQLITE_TIMEOUT = 15
+
 STALE_SECONDS = 30
 BUNCHING_KM = 0.50
 
@@ -18,7 +21,7 @@ BUNCHING_KM = 0.50
 # DATABASE
 # =========================================================
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_TIMEOUT)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -64,8 +67,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS buses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bus_number TEXT UNIQUE NOT NULL,
-            driver_name TEXT NOT NULL,
-            driver_phone TEXT NOT NULL,
+            driver_name TEXT NOT NULL DEFAULT '',
+            driver_phone TEXT NOT NULL DEFAULT '',
             driver_username TEXT UNIQUE,
             driver_password TEXT,
             lat REAL,
@@ -77,15 +80,31 @@ def init_db():
         )
     """)
 
-    # Professional demo accounts.
-    # Change these after first login.
+    # Migrate an older smartbus.db instead of crashing when Render reuses it.
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(buses)").fetchall()}
+    required = {
+        "driver_name": "TEXT NOT NULL DEFAULT ''",
+        "driver_phone": "TEXT NOT NULL DEFAULT ''",
+        "driver_username": "TEXT",
+        "driver_password": "TEXT",
+        "lat": "REAL",
+        "lon": "REAL",
+        "speed": "REAL DEFAULT 0",
+        "accuracy": "REAL",
+        "updated": "REAL",
+        "active": "INTEGER DEFAULT 1",
+    }
+    for column, definition in required.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE buses ADD COLUMN {column} {definition}")
+
     if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
         conn.execute(
             "INSERT INTO users(username,password,role) VALUES(?,?,?)",
             ("admin", hash_password("admin123"), "admin")
         )
 
-    # Keep the original 3 demo buses for demonstration.
+    # Add the demo buses only when the database is completely empty.
     if conn.execute("SELECT COUNT(*) FROM buses").fetchone()[0] == 0:
         demo = [
             ("TN 38 AB 1001", "Demo Driver 1", "9000000001", "driver1001", "bus1001"),
@@ -97,13 +116,10 @@ def init_db():
                 INSERT INTO buses
                 (bus_number,driver_name,driver_phone,driver_username,driver_password,active)
                 VALUES(?,?,?,?,?,1)
-            """, (
-                bus_number, name, phone, username, hash_password(password)
-            ))
+            """, (bus_number, name, phone, username, hash_password(password)))
 
     conn.commit()
     conn.close()
-
 
 init_db()
 
@@ -130,7 +146,19 @@ def current_user():
 
 
 def bus_public(row, rows=None):
-    b = dict(row)
+    # Never expose password hashes or driver login usernames to passengers.
+    b = {
+        "id": row["id"],
+        "bus_number": row["bus_number"],
+        "driver_name": row["driver_name"],
+        "driver_phone": row["driver_phone"],
+        "lat": row["lat"],
+        "lon": row["lon"],
+        "speed": row["speed"] or 0,
+        "accuracy": row["accuracy"],
+        "updated": row["updated"],
+        "active": row["active"],
+    }
     b["fresh"] = fresh(b.get("updated"))
     b["status"] = "LIVE" if b["fresh"] else "WAITING"
     b["age_seconds"] = round(time.time() - b["updated"], 1) if b.get("updated") else None
@@ -150,14 +178,11 @@ def bus_public(row, rows=None):
         other, d = nearest
         b["nearest_bus"] = other["bus_number"]
         b["nearest_distance_km"] = round(d, 2)
-        b["bunching"] = (
-            b["fresh"] and fresh(other["updated"]) and d <= BUNCHING_KM
-        )
+        b["bunching"] = (b["fresh"] and fresh(other["updated"]) and d <= BUNCHING_KM)
     else:
         b["nearest_bus"] = None
         b["nearest_distance_km"] = None
         b["bunching"] = False
-
     return b
 
 
@@ -555,12 +580,10 @@ function msg(text,live=false){
 }
 async function load(){
  const r=await fetch('/api/buses');const d=await r.json();
- const list=d.buses||[];
- // The driver API does not expose password. Match the logged-in driver by requesting a small endpoint below.
  const me=await fetch('/api/driver/me');
  const md=await me.json();
- assigned=list.find(b=>b.driver_username===md.username);
- if(!assigned){document.getElementById('bus').textContent='No bus assigned';return}
+ if(!me.ok || !md.bus){document.getElementById('bus').textContent='No bus assigned';return}
+ assigned=md.bus;
  document.getElementById('bus').textContent='🚌 '+assigned.bus_number;
  document.getElementById('driver').textContent='Driver: '+assigned.driver_name;
 }
@@ -585,31 +608,4 @@ function startGPS(){
  msg('📍 Requesting GPS permission...');
  watch=navigator.geolocation.watchPosition(send,e=>msg('❌ GPS: '+e.message),{
   enableHighAccuracy:true,maximumAge:5000,timeout:15000
- });
- document.getElementById('start').style.display='none';
- document.getElementById('stop').style.display='block';
-}
-async function stopGPS(){
- if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}
- await fetch('/api/driver/stop',{method:'POST'});
- document.getElementById('start').style.display='block';
- document.getElementById('stop').style.display='none';
- msg('⛔ Trip stopped.');
-}
-load();
-</script>
-</body>
-</html>
-"""
-
-
-@app.get("/api/driver/me")
-def driver_me():
-    if not login_required("driver"):
-        return jsonify({"error": "Login required"}), 401
-    return jsonify({"username": current_user()})
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-        
+    

@@ -386,6 +386,74 @@ def api_driver_stop():
 
 
 # =========================================================
+# PASSENGER UI
+# =========================================================
+PASSENGER_HTML = r"""
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartBus - Where is my Bus?</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}
+header{background:linear-gradient(135deg,#102b5c,#2563a6);color:white;padding:18px}
+header .wrap{max-width:1100px;margin:auto}header h1{margin:0 0 5px;font-size:24px}header p{margin:0;opacity:.9}
+nav{margin-top:12px}nav a{color:white;text-decoration:none;margin-right:14px;font-weight:bold}
+main{max-width:1100px;margin:auto;padding:16px}.card{background:white;border-radius:16px;padding:16px;margin-bottom:15px;box-shadow:0 4px 18px #0001}
+.search{display:flex;gap:8px}.search input{flex:1;padding:14px;border:1px solid #ccd4e0;border-radius:10px;font-size:16px}.search button{padding:14px 18px;border:0;border-radius:10px;background:#173b7a;color:white;font-weight:bold}
+#map{height:430px;border-radius:14px;overflow:hidden}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.bus{border:1px solid #e1e6ee;border-radius:12px;padding:13px}.live{color:#18753a;font-weight:bold}.wait{color:#9a6500;font-weight:bold}.warn{color:#b42318;font-weight:bold}
+.small{color:#667085;font-size:13px}.result{margin-top:12px;padding:12px;border-radius:10px;background:#f2f5f9}
+@media(max-width:600px){.search{flex-direction:column}.search button{width:100%}#map{height:360px}}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>🚌 SmartBus</h1><p>Live Bus Tracking · Where is my Bus?</p><nav><a href="/login">🔐 Admin / Driver Login</a></nav></div></header>
+<main>
+<div class="card">
+<h3>🔎 Find Your Bus</h3>
+<div class="search"><input id="q" placeholder="Enter bus number e.g. TN 38 AB 1001"><button onclick="searchBus()">SEARCH</button></div>
+<div id="result"></div>
+</div>
+<div class="card"><h3>🗺️ Live Map</h3><div id="map"></div></div>
+<div class="card"><h3>🚌 All Buses</h3><div id="buses" class="grid"></div></div>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map').setView([11.0168,76.9558],12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+const markers={};let lastBuses=[];
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function markerFor(b){
+ if(b.lat==null||b.lon==null)return;
+ if(!markers[b.bus_number]) markers[b.bus_number]=L.marker([b.lat,b.lon]).addTo(map);
+ else markers[b.bus_number].setLatLng([b.lat,b.lon]);
+ markers[b.bus_number].bindPopup('<b>🚌 '+esc(b.bus_number)+'</b><br>Status: '+esc(b.status)+'<br>Speed: '+Number(b.speed||0).toFixed(1)+' km/h');
+}
+function render(data){
+ lastBuses=data.buses||[];
+ const list=document.getElementById('buses');
+ list.innerHTML=lastBuses.map(b=>`<div class="bus"><b>🚌 ${esc(b.bus_number)}</b><br>Driver: ${esc(b.driver_name||'-')}<br><span class="${b.fresh?'live':'wait'}">● ${esc(b.status)}</span><br>Speed: ${Number(b.speed||0).toFixed(1)} km/h<br><span class="small">${b.fresh?'Updated '+Number(b.age_seconds||0).toFixed(0)+' sec ago':'Waiting for driver GPS'}</span>${b.bunching?'<br><span class="warn">⚠️ Buses are close</span>':''}</div>`).join('');
+ lastBuses.forEach(markerFor);
+}
+async function load(){try{const r=await fetch('/api/buses');const d=await r.json();if(r.ok)render(d)}catch(e){}}
+async function searchBus(){
+ const q=document.getElementById('q').value.trim();const out=document.getElementById('result');
+ if(!q){out.innerHTML='<div class="result">Enter a bus number.</div>';return}
+ try{const r=await fetch('/api/bus/'+encodeURIComponent(q));const b=await r.json();
+ if(!r.ok){out.innerHTML='<div class="result">❌ '+esc(b.error||'Bus not found')+'</div>';return}
+ out.innerHTML=`<div class="result"><b>🚌 ${esc(b.bus_number)}</b><br>Status: <b class="${b.fresh?'live':'wait'}">${esc(b.status)}</b><br>Speed: ${Number(b.speed||0).toFixed(1)} km/h<br>GPS Accuracy: ${b.accuracy==null?'-':Number(b.accuracy).toFixed(0)+' m'}<br>${b.nearest_bus?'Nearest bus: '+esc(b.nearest_bus)+' ('+Number(b.nearest_distance_km).toFixed(2)+' km)':''}${b.bunching?'<br><span class="warn">⚠️ Bunching detected</span>':''}</div>`;
+ if(b.lat!=null&&b.lon!=null){map.setView([b.lat,b.lon],16);if(markers[b.bus_number])markers[b.bus_number].openPopup()}
+ }catch(e){out.innerHTML='<div class="result">❌ Unable to reach server.</div>'}
+}
+document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')searchBus()});
+load();setInterval(load,3000);
+</script>
+</body>
+</html>
+"""
+
+# =========================================================
 # LOGIN UI
 # =========================================================
 LOGIN_HTML = r"""
@@ -471,141 +539,4 @@ a{color:#173b7a}
 <div class="grid">
 <input id="bus" placeholder="Bus Number e.g. TN 38 AB 1234">
 <input id="name" placeholder="Driver Name">
-<input id="phone" placeholder="Driver Mobile">
-<input id="du" placeholder="Driver Login Username">
-<input id="dp" type="password" placeholder="Driver Login Password">
-</div>
-<button style="margin-top:12px" onclick="addBus()">ADD BUS + CREATE DRIVER</button>
-<div id="msg"></div>
-</div>
-
-<div class="card">
-<h3>🚌 Registered Buses</h3>
-<div id="list" class="grid"></div>
-</div>
-
-<div class="card">
-<a href="/">🗺️ Passenger View</a> &nbsp; | &nbsp;
-<a href="/driver">📱 Driver Login</a>
-</div>
-</main>
-
-<script>
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
-async function addBus(){
- const payload={
-  bus_number:document.getElementById('bus').value.trim(),
-  driver_name:document.getElementById('name').value.trim(),
-  driver_phone:document.getElementById('phone').value.trim(),
-  driver_username:document.getElementById('du').value.trim(),
-  driver_password:document.getElementById('dp').value
- };
- const msg=document.getElementById('msg');
- try{
-  const r=await fetch('/api/admin/add-bus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  const d=await r.json();
-  if(!r.ok){msg.className='error';msg.textContent='❌ '+d.error;return}
-  msg.className='success';msg.textContent='✅ Bus and driver created.';
-  ['bus','name','phone','du','dp'].forEach(x=>document.getElementById(x).value='');
-  load();
- }catch(e){msg.className='error';msg.textContent='❌ Server error'}
-}
-async function load(){
- const r=await fetch('/api/buses');const d=await r.json();
- document.getElementById('list').innerHTML=(d.buses||[]).map(b=>`
- <div class="bus">
- <b>🚌 ${esc(b.bus_number)}</b><br>
- Driver: ${esc(b.driver_name)}<br>
- Mobile: ${esc(b.driver_phone)}<br>
- <span class="badge ${b.fresh?'':'wait'}">${b.fresh?'LIVE':'WAITING'}</span>
- </div>`).join('');
-}
-load();setInterval(load,3000);
-</script>
-</body>
-</html>
-"""
-
-
-# =========================================================
-# DRIVER UI
-# =========================================================
-DRIVER_HTML = r"""
-<!doctype html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SmartBus Driver</title>
-<style>
-body{margin:0;font-family:Arial;background:#f4f7fb;color:#172033}
-header{background:#173b7a;color:white;padding:18px}
-main{max-width:650px;margin:auto;padding:16px}
-.card{background:white;border-radius:16px;padding:20px;margin-bottom:15px;box-shadow:0 4px 16px #0001}
-button{width:100%;padding:15px;border:0;border-radius:10px;margin-top:10px;background:#173b7a;color:white;font-weight:bold;font-size:16px}
-.stop{background:#b42318}
-.live{background:#e8f7ed;color:#18753a;padding:12px;border-radius:10px;margin-top:12px}
-.wait{background:#fff3d6;color:#9a6500;padding:12px;border-radius:10px;margin-top:12px}
-a{color:#173b7a}
-</style>
-</head>
-<body>
-<header>
-<h2>📱 Driver GPS</h2>
-<div>{{username}} · <a href="/logout" style="color:white">Logout</a></div>
-</header>
-<main>
-<div class="card">
-<h3>Assigned Bus</h3>
-<div id="bus" style="font-size:22px;font-weight:bold">Loading...</div>
-<div id="driver"></div>
-<button id="start" onclick="startGPS()">🟢 START TRIP & GPS</button>
-<button id="stop" class="stop" onclick="stopGPS()" style="display:none">⛔ STOP TRIP</button>
-<div id="status" class="wait">GPS is not running.</div>
-</div>
-
-<div class="card">
-<b>📍 Demo Instructions</b>
-<p>Allow location permission when the browser asks. Keep this page open while driving.</p>
-<p>Your phone GPS is sent to the server and linked to your assigned bus.</p>
-</div>
-</main>
-
-<script>
-let watch=null;
-let assigned=null;
-
-function msg(text,live=false){
- const e=document.getElementById('status');
- e.textContent=text;e.className=live?'live':'wait';
-}
-async function load(){
- const r=await fetch('/api/buses');const d=await r.json();
- const me=await fetch('/api/driver/me');
- const md=await me.json();
- if(!me.ok || !md.bus){document.getElementById('bus').textContent='No bus assigned';return}
- assigned=md.bus;
- document.getElementById('bus').textContent='🚌 '+assigned.bus_number;
- document.getElementById('driver').textContent='Driver: '+assigned.driver_name;
-}
-async function send(pos){
- try{
-  const r=await fetch('/api/driver/location',{
-   method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({
-    lat:pos.coords.latitude,
-    lon:pos.coords.longitude,
-    speed:pos.coords.speed||0,
-    accuracy:pos.coords.accuracy
-   })
-  });
-  const d=await r.json();
-  if(!r.ok){msg('❌ '+d.error);return}
-  msg('🟢 LIVE GPS · Accuracy '+Math.round(pos.coords.accuracy)+' m',true);
- }catch(e){msg('❌ Network error')}
-}
-function startGPS(){
- if(!navigator.geolocation){msg('❌ GPS is not supported');return}
- msg('📍 Requesting GPS permission...');
- watch=navigator.geolocation.watchPosition(send,e=>msg('❌ GPS: '+e.message),{
-  enableHighAccuracy:true,maximumAge:5000,timeout:15000
-    
+<input id=

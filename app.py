@@ -4,10 +4,13 @@ import math
 
 app = Flask(__name__)
 
+BUNCHING_KM = 0.50
+STALE_SECONDS = 20
+
 BUSES = {
-    "BUS-01": {"lat": 11.0168, "lng": 76.9558, "speed": 0, "updated": None},
-    "BUS-02": {"lat": 11.0200, "lng": 76.9620, "speed": 0, "updated": None},
-    "BUS-03": {"lat": 11.0250, "lng": 76.9700, "speed": 0, "updated": None},
+    "BUS-01": {"lat": 11.0168, "lng": 76.9558, "speed": 0.0, "updated": None, "accuracy": None},
+    "BUS-02": {"lat": 11.0200, "lng": 76.9620, "speed": 0.0, "updated": None, "accuracy": None},
+    "BUS-03": {"lat": 11.0250, "lng": 76.9700, "speed": 0.0, "updated": None, "accuracy": None},
 }
 
 def distance_km(lat1, lon1, lat2, lon2):
@@ -16,7 +19,10 @@ def distance_km(lat1, lon1, lat2, lon2):
     p2 = math.radians(lat2)
     dp = math.radians(lat2 - lat1)
     dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    a = (
+        math.sin(dp / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    )
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 HTML = """
@@ -38,7 +44,7 @@ header p{margin:6px 0 0;font-size:13px}
 .card{background:white;border-radius:16px;padding:15px;box-shadow:0 4px 18px rgba(0,0,0,.08)}
 #map{height:520px;border-radius:12px}
 .bus-card{border:1px solid #e3e7ef;border-radius:12px;padding:12px;margin-bottom:10px}
-.bus-head{display:flex;justify-content:space-between;align-items:center}
+.bus-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .bus-name{font-size:18px;font-weight:bold}
 .badge{padding:5px 9px;border-radius:20px;font-size:12px;background:#e8f7ed;color:#19733b}
 .warning{background:#fff2d5;color:#8a5b00}
@@ -46,6 +52,9 @@ header p{margin:6px 0 0;font-size:13px}
 select,button{width:100%;padding:11px;border-radius:9px}
 select{border:1px solid #ccd4df;margin:7px 0 10px}
 button{border:0;background:#173b7a;color:white;font-weight:bold}
+.stop{background:#9b2c2c;margin-top:8px}
+.status-live{color:#19733b;font-weight:bold}
+.status-demo{color:#8a5b00;font-weight:bold}
 @media(max-width:800px){.layout{grid-template-columns:1fr}#map{height:400px}}
 </style>
 </head>
@@ -77,7 +86,11 @@ button{border:0;background:#173b7a;color:white;font-weight:bold}
 <option value="BUS-03">BUS-03</option>
 </select>
 <button onclick="startGPS()">Start Live GPS</button>
+<button id="stopButton" class="stop" onclick="stopGPS()" style="display:none">Stop Live GPS</button>
 <p id="gpsStatus">GPS not started.</p>
+<div class="info" style="font-size:12px">
+Only the selected bus will receive this phone's GPS location.
+</div>
 </div>
 </div>
 </div>
@@ -112,65 +125,88 @@ function eta(distanceKm, speed) {
 }
 
 async function updateBuses() {
-    const response = await fetch("/api/buses");
-    const buses = await response.json();
-    const ids = Object.keys(buses);
+    try {
+        const response = await fetch("/api/buses");
+        const buses = await response.json();
+        const ids = Object.keys(buses);
+        const now = Date.now() / 1000;
 
-    ids.forEach((id, index) => {
-        const bus = buses[id];
-        if (!markers[id]) {
-            markers[id] = L.circleMarker([bus.lat, bus.lng], {
-                radius: 9,
-                color: colors[index],
-                fillColor: colors[index],
-                fillOpacity: 0.9
-            }).addTo(map).bindTooltip(id, {
-                permanent: true,
-                direction: "top"
-            });
-        } else {
-            markers[id].setLatLng([bus.lat, bus.lng]);
-        }
-    });
+        ids.forEach((id, index) => {
+            const bus = buses[id];
 
-    let html = "";
-
-    ids.forEach(id => {
-        const bus = buses[id];
-        let nearest = Infinity;
-        let nearestBus = "";
-
-        ids.forEach(other => {
-            if (other === id) return;
-            const d = distance(bus, buses[other]);
-            if (d < nearest) {
-                nearest = d;
-                nearestBus = other;
+            if (!markers[id]) {
+                markers[id] = L.circleMarker([bus.lat, bus.lng], {
+                    radius: 9,
+                    color: colors[index],
+                    fillColor: colors[index],
+                    fillOpacity: 0.9
+                }).addTo(map).bindTooltip(id, {
+                    permanent: true,
+                    direction: "top"
+                });
+            } else {
+                markers[id].setLatLng([bus.lat, bus.lng]);
             }
         });
 
-        const bunching = nearest < 0.5;
-        const arrival = eta(nearest, bus.speed);
-        const status = bunching ? "⚠️ Bunching" :
-            (bus.speed < 2 ? "🟡 Stopped" : "🟢 Moving");
+        let html = "";
 
-        html += `
-        <div class="bus-card">
-            <div class="bus-head">
-                <div class="bus-name">🚌 ${id}</div>
-                <div class="badge ${bunching ? "warning" : ""}">${status}</div>
-            </div>
-            <div class="info">🚀 Speed: <b>${bus.speed.toFixed(1)} km/h</b></div>
-            <div class="info">🚍 Nearest Bus: <b>${nearestBus}</b></div>
-            <div class="info">📏 Distance: <b>${nearest.toFixed(2)} km</b></div>
-            <div class="info">⏱️ Estimated Time: <b>${arrival ? arrival + " min" : "Waiting for movement"}</b></div>
-            ${bunching ? `<div class="info" style="color:#8a5b00">
-                ⚠️ Traffic bunching detected. Buses are within 500 meters.
-            </div>` : ""}
-        </div>`;
-    });
+        ids.forEach(id => {
+            const bus = buses[id];
+            const isFresh = bus.updated !== null &&
+                (now - bus.updated) <= 20;
 
-    document.getElementById("busCards").innerHTML = html;
+            let nearest = Infinity;
+            let nearestBus = "";
+
+            ids.forEach(other => {
+                if (other === id) return;
+                const d = distance(bus, buses[other]);
+                if (d < nearest) {
+                    nearest = d;
+                    nearestBus = other;
+                }
+            });
+
+            const bunching = isFresh && nearest < 0.5;
+            const arrival = isFresh ? eta(nearest, bus.speed) : null;
+
+            let status;
+            if (!isFresh) {
+                status = "📍 Demo / Waiting";
+            } else if (bunching) {
+                status = "⚠️ Bunching";
+            } else if (bus.speed < 2) {
+                status = "🟡 Stopped";
+            } else {
+                status = "🟢 Moving";
+            }
+
+            html += `
+            <div class="bus-card">
+                <div class="bus-head">
+                    <div class="bus-name">🚌 ${id}</div>
+                    <div class="badge ${bunching ? "warning" : ""}">${status}</div>
+                </div>
+                <div class="info">🚀 Speed: <b>${Number(bus.speed).toFixed(1)} km/h</b></div>
+                <div class="info">🚍 Nearest Bus: <b>${nearestBus}</b></div>
+                <div class="info">📏 Distance: <b>${nearest.toFixed(2)} km</b></div>
+                <div class="info">⏱️ Estimated Time: <b>${arrival ? arrival + " min" : "Waiting for movement"}</b></div>
+                <div class="info ${isFresh ? "status-live" : "status-demo"}">
+                    ${isFresh ? "📡 GPS updated recently" : "📍 Starting/demo position"}
+                </div>
+                ${isFresh && bunching ? `
+                    <div class="info" style="color:#8a5b00">
+                        ⚠️ Traffic bunching detected. Buses are within 500 meters.
+                    </div>` : ""}
+            </div>`;
+        });
+
+        document.getElementById("busCards").innerHTML = html;
+    } catch (error) {
+        document.getElementById("busCards").innerHTML =
+            "<div class='info'>Unable to load bus data.</div>";
+    }
 }
 
 let watchId = null;
@@ -189,23 +225,32 @@ function startGPS() {
 
     document.getElementById("gpsStatus").textContent =
         "📍 Live GPS started for " + bus;
+    document.getElementById("stopButton").style.display = "block";
 
     watchId = navigator.geolocation.watchPosition(
         async position => {
+            const speedMs = position.coords.speed;
+            const speedKmh = speedMs === null ? 0 : Math.max(0, speedMs * 3.6);
+
             const data = {
                 bus: bus,
                 lat: position.coords.latitude,
                 lng: position.coords.longitude,
-                speed: (position.coords.speed || 0) * 3.6
+                speed: speedKmh,
+                accuracy: position.coords.accuracy
             };
 
-            await fetch("/api/location", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(data)
-            });
-
-            updateBuses();
+            try {
+                await fetch("/api/location", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify(data)
+                });
+                updateBuses();
+            } catch (error) {
+                document.getElementById("gpsStatus").textContent =
+                    "GPS update failed.";
+            }
         },
         error => {
             document.getElementById("gpsStatus").textContent =
@@ -217,6 +262,15 @@ function startGPS() {
             timeout: 10000
         }
     );
+}
+
+function stopGPS() {
+    if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+    }
+    document.getElementById("gpsStatus").textContent = "GPS stopped.";
+    document.getElementById("stopButton").style.display = "none";
 }
 
 updateBuses();
@@ -250,14 +304,19 @@ def update_location():
         lat = float(data["lat"])
         lng = float(data["lng"])
         speed = max(0.0, float(data.get("speed", 0)))
+        accuracy = float(data.get("accuracy", 0))
     except (KeyError, TypeError, ValueError):
         return jsonify({"error": "Invalid GPS data"}), 400
+
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return jsonify({"error": "Invalid coordinates"}), 400
 
     BUSES[bus].update({
         "lat": lat,
         "lng": lng,
         "speed": speed,
-        "updated": time()
+        "updated": time(),
+        "accuracy": accuracy
     })
 
     return jsonify({"success": True, "bus": bus})
